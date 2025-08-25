@@ -1,0 +1,381 @@
+---
+title: "Preliminary Ecological Analysis of Viral Communities"
+author: "Dimitris Karapliafis"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+## Introduction
+
+This document outlines a preliminary ecological analysis of viral operational taxonomic units (vOTUs) from various plant samples. We will explore alpha diversity (richness and evenness) and beta diversity (community composition) across different sampling sites, host species, and timepoints.
+
+### Setup and Libraries
+
+Load the necessary R packages for data analysis and visualization.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r load-libraries}
+library(vegan)
+library(tidyverse)
+library(Rtsne)
+library(umap)
+```
+
+### Data Loading and Preparation
+
+First, we load the RPKM matrix, which contains vOTU abundances across all samples. The data is then processed to be suitable for ecological analysis.
+
+```{r load-data}
+# Read the RPKM file
+# Assuming the first column is the contig/vOTU name
+rpkm_df <- readr::read_tsv("master_clusters_custom_rpkm_bwa2.tsv")
+
+# The analysis requires a matrix with samples as rows and vOTUs as columns.
+# We set the first column as row names, transpose the matrix, and round the values.
+community_matrix <- rpkm_df %>%
+  tibble::column_to_rownames(var = names(rpkm_df)[1]) %>%
+  round() %>%
+  as.data.frame()
+
+row.names(community_matrix)[row.names(community_matrix) == "D.JA.M21"] <- "D.JV.M21"
+```
+
+### Metadata Preparation
+
+We extract metadata (site, species, timepoint) from the sample names (the row names of our community matrix). We then convert the short codes into full, descriptive names for clarity in plots and analyses.
+
+
+```{r prepare-metadata}
+metadata_df <- community_matrix %>%
+  rownames_to_column(var = "library") %>%
+  select(library) %>%
+  # Separate the library name into metadata columns
+  tidyr::separate(library, into = c("site", "species", "timepoint"), sep = "\\.", remove = FALSE) %>%
+  # Recode the metadata variables to their full names
+  mutate(
+    site_full = case_when(
+      site == "D" ~ "38-Dennenkamp",
+      site == "M" ~ "35-Mosselseveld",
+      site == "C" ~ "25-Clueveld",
+      site == "T" ~ "18-Telefoonweg",
+      site == "R" ~ "15-Reijerscamp",
+      TRUE ~ site
+    ),
+    species_full = case_when(
+      species == "BH" ~ "Bromus",
+      species == "PL" ~ "Plantago",
+      species == "AM" ~ "Achillea",
+      species == "JV" ~ "Jacobaea",
+      species == "GM" ~ "Geranium",
+      species == "HP" ~ "Hypericum",
+      species == "VA" ~ "Viola",
+      species == "RA" ~ "Rumex",
+      TRUE ~ species
+    ),
+    timepoint_full = case_when(
+      timepoint == "A20" ~ "Aug 2020",
+      timepoint == "M20" ~ "May 2020",
+      timepoint == "J21" ~ "July 2021",
+      timepoint == "M21" ~ "May 2021",
+      TRUE ~ timepoint
+    )
+  )
+
+```
+
+## Alpha Diversity Analysis
+
+Alpha diversity refers to the diversity within a particular sample. We will investigate two common metrics: species richness (the number of vOTUs) and Shannon's diversity index (which accounts for both richness and evenness).
+
+### Species Richness
+
+We first calculate vOTU richness for each sample and then test if it differs significantly across sites, species, or timepoints using ANOVA.
+
+```{r richness-calculation}
+# Calculate richness (number of vOTUs per sample)
+richness <- specnumber(community_matrix)
+
+# Perform ANOVA to test for differences in richness
+summary(aov(richness ~ site, data = metadata_df))
+summary(aov(richness ~ species, data = metadata_df))
+summary(aov(richness ~ timepoint, data = metadata_df))
+```
+
+#### Richness Visualization
+
+We create boxplots to visualize the distribution of vOTU richness across the different experimental factors.
+
+```{r richness-visualization}
+# Combine richness data with metadata for plotting
+richness_df <- richness %>%
+  enframe(name = "library", value = "richness") %>%
+  left_join(metadata_df, by = "library")
+
+# Define a color palette and a custom theme for consistent plotting
+cb_palette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#C59D94" )
+theme_custom <- theme_bw(base_size = 12) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+# Plot Richness per Site
+ggplot(richness_df, aes(x = site_full, y = richness, fill = site_full)) +
+  geom_boxplot(alpha = 0.3) +
+  geom_jitter(width = 0.2, size = 1.5) +
+  scale_fill_manual(values = cb_palette) +
+  theme_custom +
+  labs(x = "Sampling Site", y = "Number of RdRp vOTUs", title = "vOTU Richness per Site")
+
+custom_order <- factor(richness_df$species_full, levels = c("Geranium","Viola", "Bromus", "Jacobaea","Rumex", "Hypericum", "Achillea", "Plantago"  ))
+
+# Plot Richness per Species
+ggplot(richness_df, aes(x = custom_order, y = richness, fill = species_full)) +
+  geom_boxplot(alpha = 0.3) +
+  geom_jitter(width = 0.2, size = 1.5) +
+  scale_fill_manual(values = cb_palette) +
+  theme_custom +
+  labs(x = "Host Species", y = "Number of RdRp vOTUs", title = "vOTU Richness per Host Species")
+
+# Plot Richness per Timepoint
+ggplot(richness_df, aes(x = factor(timepoint_full, levels = c("May 2020", "Aug 2020", "May 2021", "July 2021")), y = richness, fill = timepoint_full)) +
+  geom_boxplot(alpha = 0.3) +
+  geom_jitter(width = 0.2, size = 1.5) +
+  scale_fill_manual(values = cb_palette) +
+  theme_custom +
+  labs(x = "Sampling Timepoint", y = "Number of RdRp vOTUs", title = "vOTU Richness per Timepoint")
+```
+
+### Shannon's Diversity Index
+
+We repeat the analysis using Shannon's diversity index.
+
+```{r shannon-calculation}
+# Calculate Shannon's diversity index
+shannon_div <- diversity(community_matrix, index = "shannon")
+
+# Perform ANOVA to test for differences in diversity
+summary(aov(shannon_div ~ site, data = metadata_df))
+summary(aov(shannon_div ~ species, data = metadata_df))
+summary(aov(shannon_div ~ timepoint, data = metadata_df))
+```
+
+#### Shannon Diversity Visualization
+
+```{r shannon-visualization}
+# Combine Shannon diversity data with metadata for plotting
+shannon_df <- shannon_div %>%
+  enframe(name = "library", value = "shannon_diversity") %>%
+  left_join(metadata_df, by = "library")
+
+# Plot Shannon Diversity per Site
+ggplot(shannon_df, aes(x = site_full, y = shannon_diversity, fill = site_full)) +
+  geom_boxplot(alpha = 0.3) +
+  geom_jitter(width = 0.2, size = 1.5) +
+  scale_fill_manual(values = cb_palette) +
+  theme_custom +
+  labs(x = "Sampling Site", y = "Shannon's Diversity Index", title = "Shannon's Diversity per Site")
+
+
+
+# Plot Shannon Diversity per Species
+ggplot(shannon_df, aes(x = custom_order, y = shannon_diversity, fill = species_full)) +
+  geom_boxplot(alpha = 0.3) +
+  geom_jitter(width = 0.2, size = 1.5) +
+  scale_fill_manual(values = cb_palette) +
+  theme_custom +
+  labs(x = "Host Species", y = "Shannon's Diversity Index", title = "Shannon's Diversity per Host Species")
+
+# Plot Shannon Diversity per Timepoint
+ggplot(shannon_df, aes(x = factor(timepoint_full, levels = c("May 2020", "Aug 2020", "May 2021", "July 2021")), y = shannon_diversity, fill = timepoint_full)) +
+  geom_boxplot(alpha = 0.3) +
+  geom_jitter(width = 0.2, size = 1.5) +
+  scale_fill_manual(values = cb_palette) +
+  theme_custom +
+  labs(x = "Sampling Timepoint", y = "Shannon's Diversity Index", title = "Shannon's Diversity per Timepoint")
+```
+
+## Beta Diversity Analysis
+
+Beta diversity measures the difference in community composition between samples. We use PERMANOVA to test for significant differences in community structure and ordination methods (NMDS, t-SNE, UMAP) to visualize these differences.
+
+### PERMANOVA
+
+Permutational Multivariate Analysis of Variance (PERMANOVA) tests whether groups of samples have different community compositions.
+
+```{r permanova}
+# Ensure metadata rows are in the same order as the community matrix
+metadata_sorted <- metadata_df %>% arrange(match(library, rownames(community_matrix)))
+
+# PERMANOVA on sites
+adonis2(community_matrix ~ site, data = metadata_sorted)
+
+# PERMANOVA on species
+adonis2(community_matrix ~ species, data = metadata_sorted)
+
+# PERMANOVA on timepoints
+adonis2(community_matrix ~ timepoint, data = metadata_sorted)
+```
+
+### Ordination and Visualization
+
+Ordination is a set of techniques used to visualize complex community data in a low-dimensional space (usually 2D).
+
+#### NMDS (Non-metric Multidimensional Scaling)
+
+NMDS is a robust unconstrained ordination method commonly used in ecology.
+
+```{r nmds}
+# Calculate NMDS. Horn-Morisita is a good choice for abundance data.
+nmds_result <- metaMDS(community_matrix, distance = "bray", k = 2, try = 100, trymax = 100)
+
+# Check the stress plot. A stress value < 0.2 is acceptable.
+stressplot(nmds_result)
+
+# Extract scores for plotting
+nmds_scores <- scores(nmds_result, display = "sites") %>%
+  as.data.frame() %>%
+  rownames_to_column("library") %>%
+  left_join(metadata_df, by = "library")
+
+# Define a plotting theme for ordination
+theme_ord <- theme_bw(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    legend.title = element_text(face = "bold")
+  )
+
+
+
+# Plot NMDS colored by site
+ggplot(nmds_scores, aes(x = NMDS1, y = NMDS2, color = site_full)) +
+  geom_point(size = 3, alpha = 0.8) +
+  stat_ellipse(aes(group = site_full), linetype = 2) +
+  scale_color_manual(values = cb_palette) +
+  theme_ord +
+  labs(title = "NMDS of Viral Communities", color = "Site")
+
+# Plot NMDS colored by species
+ggplot(nmds_scores, aes(x = NMDS1, y = NMDS2, color = species_full)) +
+  geom_point(size = 3, alpha = 0.8) +
+  stat_ellipse(aes(group = species_full), linetype = 2) +
+  scale_color_manual(values = cb_palette) +
+  theme_ord +
+  labs(title = "NMDS of Viral Communities", color = "Host Species")
+
+# Plot NMDS colored by timepoint
+ggplot(nmds_scores, aes(x = NMDS1, y = NMDS2, color = timepoint_full)) +
+  geom_point(size = 3, alpha = 0.8) +
+  stat_ellipse(aes(group = timepoint_full), linetype = 2) +
+  scale_color_manual(values = cb_palette) +
+  theme_ord +
+  labs(title = "NMDS of Viral Communities", color = "Timepoint")
+
+
+```
+
+#### t-SNE (t-distributed Stochastic Neighbor Embedding)
+
+t-SNE is another dimensionality reduction technique, particularly good at visualizing well-separated clusters.
+
+```{r tsne}
+# Calculate Bray-Curtis distance matrix
+bray_dist <- vegdist(community_matrix, method = "bray")
+
+# Run Rtsne
+tsne_result <- Rtsne(bray_dist, is_distance = TRUE, perplexity = 10, check_duplicates = FALSE)
+
+# Prepare data for plotting
+tsne_df <- tsne_result$Y %>%
+  as.data.frame() %>%
+  rename(tSNE1 = V1, tSNE2 = V2) %>%
+  bind_cols(metadata_df)
+
+# Plot t-SNE colored by site
+ggplot(tsne_df, aes(x = tSNE1, y = tSNE2, color = site_full)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = cb_palette) +
+  stat_ellipse(aes(group = site_full), linetype = 2) +
+  theme_ord +
+  labs(title = "t-SNE of Viral Communities", color = "Site")
+
+# Plot t-SNE colored by species
+ggplot(tsne_df, aes(x = tSNE1, y = tSNE2, color = species_full)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = cb_palette) +
+  stat_ellipse(aes(group = species_full), linetype = 2) +
+  theme_ord +
+  labs(title = "t-SNE of Viral Communities", color = "Species")
+
+
+# Plot t-SNE colored by species
+ggplot(tsne_df, aes(x = tSNE1, y = tSNE2, color = timepoint_full)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = cb_palette) +
+  stat_ellipse(aes(group = timepoint_full), linetype = 2) +
+  theme_ord +
+  labs(title = "t-SNE of Viral Communities", color = "Timepoint")
+
+
+
+```
+
+#### UMAP (Uniform Manifold Approximation and Projection)
+
+UMAP is a newer technique that is often faster than t-SNE and can be better at preserving the global structure of the data.
+
+```{r umap}
+# Run UMAP on the distance matrix
+bray_matrix<-as.matrix(bray_dist)
+
+umap_result <- umap(bray_matrix, preserve.seed = TRUE)
+
+# Prepare data for plotting
+umap_df <- umap_result$layout %>%
+  as.data.frame() %>%
+  rename(UMAP1 = V1, UMAP2 = V2) %>%
+  bind_cols(metadata_df)
+  
+# Plot UMAP colored by species
+ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = species_full)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = cb_palette) +
+  stat_ellipse(aes(group = species_full), linetype = 2) +
+  theme_ord +
+  labs(title = "UMAP of Viral Communities", color = "Host Species")
+
+# Plot UMAP colored by species
+ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = site_full)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = cb_palette) +
+  stat_ellipse(aes(group = site_full), linetype = 2) +
+  theme_ord +
+  labs(title = "UMAP of Viral Communities", color = "Sites")
+
+
+# Plot UMAP colored by species
+ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = timepoint_full)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = cb_palette) +
+  stat_ellipse(aes(group = timepoint_full), linetype = 2) +
+  theme_ord +
+  labs(title = "UMAP of Viral Communities", color = "Timepoints")
+
+
+
+
+
+
+```
+
+
+
+
+

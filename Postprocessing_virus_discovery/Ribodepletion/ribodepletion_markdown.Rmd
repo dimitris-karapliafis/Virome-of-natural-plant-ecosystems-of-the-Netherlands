@@ -1,0 +1,108 @@
+---
+title: "Ribodepletion Analysis"
+author: "Dimitris Karapliafis"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Analysis of in-silico Ribosomal RNA Depletion
+
+This document analyzes the effectiveness of the *in silico* ribosomal RNA (rRNA) depletion step. We compare the total number of reads before and after ribodepletion to calculate the percentage of non-rRNA reads for each library.
+
+### Setup and Libraries
+
+Load the necessary R packages for data manipulation and visualization. We will use the `tidyverse` package collection.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r load-libraries}
+library(tidyverse)
+```
+
+### Data Loading
+
+Load the datasets containing the total read counts before (trimmed) and after (ribodepleted) the rRNA removal step.
+
+```{r load-data}
+total_reads_df <- readr::read_tsv("total_read_counts.tsv")
+total_reads_trimmed_df <- readr::read_tsv("total_read_counts_trimmed.tsv")
+```
+
+### Data Cleaning
+
+The `library` column in both dataframes contains file paths that need to be cleaned to extract sample identifiers. We will perform string manipulations to get clean names and ensure consistency between the two dataframes.
+
+```{r clean-data}
+# Process the dataframe of ribodepleted reads
+reads_ribodepleted_df <- total_reads_df %>%
+  mutate(
+    library = library %>%
+      str_remove(".*reads/") %>%
+      str_remove("\\.nonrrna.*") %>%
+      str_replace_all("-", "."),
+    # Correct a known inconsistency in sample naming
+    library = if_else(library == "D.JA.M21", "D.JV.M21", library)
+  ) %>%
+  distinct() # Remove any duplicate rows
+
+# Process the dataframe of trimmed (pre-ribodepletion) reads
+reads_trimmed_df <- total_reads_trimmed_df %>%
+  mutate(
+    library = library %>%
+      str_remove(".*trimmed/") %>%
+      str_remove("_[12].*") %>% # Remove read pair suffixes like _1 or _2
+      str_replace_all("-", "."),
+    # Correct a known inconsistency in sample naming
+    library = if_else(library == "D.JA.M21", "D.JV.M21", library)
+  ) %>%
+  distinct() # Remove any duplicate rows
+```
+
+### Merging Data and Calculating Percentages
+
+Now, we merge the two dataframes by library name and calculate the percentage of reads that remained after ribodepletion.
+
+```{r merge-and-calculate}
+merged_df <- inner_join(
+  reads_trimmed_df,
+  reads_ribodepleted_df,
+  by = "library",
+  suffix = c("_trimmed", "_ribodepleted")
+) %>%
+  # Rename columns for clarity
+  rename(
+    total_trimmed_reads = read_counts_trimmed,
+    ribodepleted_reads = read_counts_ribodepleted
+  ) %>%
+  # Calculate the percentage of reads remaining after ribodepletion
+  mutate(
+    ribo_perc = (ribodepleted_reads / total_trimmed_reads) * 100
+  ) %>%
+  distinct() # Ensure final dataframe is unique
+```
+
+### Visualization
+
+Finally, we create a histogram to visualize the distribution of the percentage of reads that passed the *in silico* ribodepletion across all libraries.
+
+```{r visualize-results, fig.width=10, fig.height=6}
+ggplot(merged_df, aes(x = ribo_perc)) +
+  geom_histogram(binwidth = 5, fill = 'steelblue', color = 'black', boundary = 0) +
+  labs(
+    title = 'Percentage of Reads Remaining After In-Silico Ribodepletion',
+    x = 'Percentage of Non-rRNA Reads (%)',
+    y = 'Number of Libraries'
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+
+write.table(merged_df, file = "ribodepletion_summary.tsv", col.names = NA, quote = FALSE, sep = "\t")
+
+```
+

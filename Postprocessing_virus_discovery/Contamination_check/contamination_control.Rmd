@@ -1,0 +1,146 @@
+---
+title: "contamination_check"
+author: "Dimitris Karapliafis"
+date: "2025-04-09"
+output: html_document
+---
+
+## Contamination Analysis
+
+This document outlines the steps to process and analyze contamination data from control samples. We will process raw counts, TPM (Transcripts Per Million), and RPB (Reads Per Base) data, normalize it, and check for potential contaminants.
+
+### Setup and Libraries
+
+Load the necessary R packages for data manipulation and analysis. We primarily use the `tidyverse` suite of packages.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r load-libraries}
+library(tidyverse)
+```
+
+### Data Loading
+
+Load the raw count, RPB, and TPM data, along with the total read counts for each library. We use `read_tsv` for efficient and robust data loading.
+
+```{r load-data}
+counts_df <- readr::read_tsv("control_contamination.counts.bwa2.tsv")
+rpb_df <- readr::read_tsv("control_contamination.rpb.bwa2.tsv")
+tpm_df <- readr::read_tsv("control_contamination.tpm.bwa2.tsv")
+total_reads_df <- readr::read_tsv("total_read_counts.tsv")
+```
+
+### Data Cleaning
+
+The column names in the count-based dataframes are long and contain technical suffixes from the bioinformatics pipeline (e.g., `.fastq.nonrrna...`). We'll clean these up to get clean sample IDs. We'll also set the `Contig_name` column as row names for easier data manipulation.
+
+This process is the same for `counts_df`, `tpm_df`, and `rpb_df`, so we create a reusable function.
+
+```{r clean-names-function}
+clean_sample_names <- function(df) {
+  # Clean up column names to get sample identifiers
+  # e.g., from 'Sample1.fastq.nonrrna.stuff' to 'Sample1'
+  clean_names <- names(df) %>%
+    str_remove("\\.fastq\\..*") %>%
+    str_remove("\\.nonrrna.*")
+  
+  names(df) <- clean_names
+  
+  # The first column contains contig names
+  names(df)[1] <- "Contig_name"
+  
+  # Set contig names as rownames
+  df <- df %>%
+    tibble::column_to_rownames(var = "Contig_name")
+  
+  return(df)
+}
+
+# Apply the cleaning function to the dataframes
+counts_df_cleaned <- clean_sample_names(counts_df)
+tpm_df_cleaned <- clean_sample_names(tpm_df)
+rpb_df_cleaned <- clean_sample_names(rpb_df)
+```
+
+### Analyze Raw Counts
+
+Here, we transpose the counts data to have samples as rows and contigs as columns. We then sort the samples based on the abundance of a specific virus (`Bacopa_chlorosis_virus_RNA2`) to check its prevalence across the controls. The resulting table is saved.
+
+```{r process-counts}
+transposed_counts_df <- as.data.frame(t(counts_df_cleaned))
+
+# Filter out samples with no counts for any contig
+# This variable can be used for exploratory analysis.
+non_zero_counts_df <- transposed_counts_df %>%
+  filter(rowSums(. != 0) > 0)
+
+# Sort by abundance of a specific virus and save
+sorted_transposed_counts <- transposed_counts_df %>%
+  arrange(desc(Bacopa_chlorosis_virus_RNA2))
+
+readr::write_tsv(sorted_transposed_counts, "custom_counts_control.tsv")
+```
+
+
+### Analyze TPM Data
+
+We perform a similar transposition and filtering for the TPM data. This can be used to see which samples show expression of the control contigs.
+
+```{r process-tpm}
+transposed_tpm_df <- as.data.frame(t(tpm_df_cleaned))
+
+# Filter out samples with no TPM for any contig.
+non_zero_tpm_df <- transposed_tpm_df %>%
+  filter(rowSums(. != 0) > 0)
+```
+
+### RPKM Normalization and Analysis
+
+To get a better-normalized metric, we will calculate RPKM (Reads Per Kilobase of transcript per Million mapped reads).
+
+First, we clean up the `total_reads_df` to get a clean library name and the total number of reads for each.
+
+```{r process-total-reads}
+# Clean library names and correct inconsistencies
+total_reads_cleaned_df <- total_reads_df %>%
+  mutate(
+    library = library %>%
+      str_remove(".*reads/") %>%
+      str_remove("\\.nonrrna.*") %>%
+      str_replace_all("-", "."),
+    library = if_else(library == "D.JA.M21", "D.JV.M21", library)
+  ) %>%
+  distinct() # Remove any duplicate rows
+```
+
+Now, we calculate the RPKM values.
+
+```{r calculate-rpkm}
+# Manually correct a sample name in the rpb dataframe to match other files
+colnames(rpb_df_cleaned)[colnames(rpb_df_cleaned) == "D.JA.M21"] <- "D.JV.M21"
+
+# Convert RPB (Reads Per Base) to RPKB (Reads Per Kilobase)
+rpkb_df <- rpb_df_cleaned * 1000
+
+# Prepare scaling factors (total reads per million)
+scaling_factors_df <- total_reads_cleaned_df %>%
+  mutate(scaling_factor = read_counts / 1e6) %>%
+  select(library, scaling_factor)
+
+# Ensure the scaling factors are in the same order as the columns in our data
+ordered_scaling_factors <- scaling_factors_df[match(colnames(rpkb_df), scaling_factors_df$library), ]
+
+# Calculate RPKM by dividing each column by its corresponding scaling factor
+rpkm_df <- sweep(rpkb_df, 2, ordered_scaling_factors$scaling_factor, FUN = "/")
+
+# Transpose and sort by the abundance of the control virus
+transposed_rpkm_df <- as.data.frame(t(rpkm_df))
+
+sorted_transposed_rpkm <- transposed_rpkm_df %>%
+  arrange(desc(Bacopa_chlorosis_virus_RNA2))
+
+# Save the final RPKM table
+readr::write_tsv(sorted_transposed_rpkm, "custom_rpkm_control.tsv")
+```

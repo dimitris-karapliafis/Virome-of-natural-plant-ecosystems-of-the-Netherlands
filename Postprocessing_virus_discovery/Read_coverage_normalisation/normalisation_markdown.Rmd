@@ -1,0 +1,220 @@
+---
+title: "Normalisation_markdown"
+author: "Dimitris Karapliafis"
+date: "2025-04-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## vOTU Read Coverage Normalization
+
+This document details the process of normalizing viral operational taxonomic unit (vOTU) read counts from metagenomic samples. The goal is to calculate Reads Per Kilobase per Million mapped reads (RPKM), a metric that allows for comparing vOTU abundance across samples and vOTUs of different lengths.
+
+### Load Libraries
+
+First, we load the necessary R packages for data manipulation, analysis, and visualization.
+
+```{r imports}
+# For data wrangling and visualization
+library(tidyverse)
+# For ecological analysis
+library(vegan)
+# For dimensionality reduction
+library(Rtsne)
+library(umap)
+# For creating complex upset plots
+library(ComplexUpset)
+```
+
+### Load Data
+
+We begin by loading two essential datasets:
+
+1.  **Read Counts**: The output from CoverM containing the number of reads mapped to each vOTU, calculated as reads per base (RPB).
+2.  **Library Sizes**: A table containing the total number of reads for each library after ribosomal RNA depletion.
+
+```{r load_data}
+# Main ecological analysis
+rpb_df <-read.table("master_clusters__rpb_bwa2.tsv", sep= "\t", header=TRUE)
+total_reads_df <- read.table("total_read_counts.tsv", sep= "\t", header=TRUE)
+```
+
+### Data Preprocessing
+
+Before normalization, we need to clean the data frames.
+
+#### Clean Sample Names
+
+The column names in the raw data tables are long and contain file paths. We need to extract just the sample names. For example, a column name like `"master_contigs.clustered.filtered.fasta/C-AM-A20.nonrrna_1.fastq Reads per base"` will be shortened to `"C-AM-A20"`.
+
+To make this process reusable and robust, we define a function to clean the names.
+
+```{r clean_name_function}
+# Function to extract sample names from CoverM output column headers
+clean_sample_names <- function(column_names) {
+  # Remove file path prefix ending in .fasta/ or .fasta.
+  names <- gsub(".*\\.fasta[\\./]", "", column_names)
+  # Remove suffixes like .nonrrna, .nonrrna_1.fastq, etc.
+  names <- gsub("\\.nonrrna.*", "", names)
+  # Remove suffixws like 'insilico_ribodepleted_reads/'
+  names <- gsub("\\insilico_ribodepleted_reads/*", "", names)
+  
+  return(names)
+}
+```
+
+Now, we apply this function to our `rpb_df` data frame and prepare it for analysis.
+
+```{r preprocess_rpb}
+# Clean the column names
+new_names <- clean_sample_names(names(rpb_df))
+
+# Assign the new names to the dataframe
+names(rpb_df) <- new_names
+# The first column doesn't have a sample name, it contains the contig names.
+# We set its name to "Contig_name"
+names(rpb_df)[1] <- "Contig_name"
+
+# Set row names to contig names and remove the contig name column
+rownames(rpb_df) <- rpb_df$Contig_name
+rpb_df$Contig_name <- NULL
+
+# Remove vOTUs that have zero reads across all samples
+rpb_df <- rpb_df[rowSums(rpb_df !=  0) >  0, ]
+
+head(rpb_df)
+```
+
+We correct a typo in one of the library names (`D.JA.M21` should be `D.JV.M21`).
+
+```{r correct_typo_rpb}
+colnames(rpb_df)[colnames(rpb_df) == "D.JA.M21"] <- "D.JV.M21"
+```
+
+Similarly, we process the library names in the `total_reads_df` dataframe to ensure they match the sample names in `rpb_df`.
+
+```{r preprocess_total_reads}
+# Process total_reads_df library names
+total_reads_df$library <- clean_sample_names(total_reads_df$library)
+
+# The cleaning function might leave hyphens, while other names use dots. We standardize to dots.
+total_reads_df$library <- gsub("-", ".", total_reads_df$library)
+# Correct the same typo as before
+total_reads_df$library <- replace(total_reads_df$library, total_reads_df$library == "D.JA.M21", "D.JV.M21")
+
+head(total_reads_df)
+```
+
+The `total_reads_df` dataframe contains entries for both forward and reverse reads. Since the read counts are identical, we remove these duplicates to get a unique library size per sample.
+
+```{r unique_reads}
+# Use dplyr's distinct() for clarity
+unique_total_reads_df <- distinct(total_reads_df)
+```
+
+### RPKM Normalization
+
+#### Step 1: Calculate Reads Per Kilobase (RPK)
+
+The `rpb_df` dataframe contains reads per base. We multiply each value by 1000 to get reads per kilobase (RPK).
+
+```{r calculate_rpk}
+# Multiply with 1000 to retrieve reads per kilobase
+rpk_df <- rpb_df * 1000
+```
+
+#### Step 2: Calculate Scaling Factor and RPKM
+
+To get RPKM, we need to normalize by the total number of reads in each library (sequencing depth). We calculate a scaling factor for each library, which is the total number of reads divided by one million.
+
+```{r calculate_scaling_factor}
+rownames(unique_total_reads_df) <- unique_total_reads_df$library
+unique_total_reads_df$scaling_factor <- unique_total_reads_df$read_counts / 1000000
+```
+
+Then, we calculate RPKM using the formula: `RPKM = RPK / scaling_factor`. We ensure that we are dividing by the correct scaling factor for each sample by matching the column names of our RPK table with the library names in our total reads table.
+
+```{r calculate_rpkm}
+# Match column names from rpk_df with library names to get scaling factors in the correct order
+scaling_factors <- unique_total_reads_df[match(colnames(rpk_df), unique_total_reads_df$library), "scaling_factor"]
+
+# Divide each column in rpk_df by its corresponding scaling factor
+rpkm_df <- sweep(rpk_df, 2, scaling_factors, FUN = "/")
+
+head(rpkm_df)
+```
+
+The result (`rpkm_df`) is a normalized expression matrix. Each value represents the RPKM, a measure that normalizes for both sequencing depth and feature length, allowing for comparison across different samples and features.
+
+### Filtering by Coverage Fraction
+
+We want to apply an additional quality control step: for each sample, the RPKM for a vOTU should be set to zero if the vOTU was covered by reads across less than 75% of its length.
+
+CoverM's `reads_per_base` mode does not support this filtering directly. As a workaround, we run CoverM again using the `tpm` method with the `--min-covered-fraction 0.75` flag. We then use the resulting TPM table as a "mask" to apply this filter to our RPKM table.
+
+#### Load and Process TPM Data
+
+First, we load the TPM data and process the column names using the same function as before to ensure consistency.
+
+```{r load_tpm}
+tpm_df <- read.table("master_clusters_tpm_bwa2_ribo.tsv", sep= "\t", header=TRUE)
+
+# Clean column names
+names(tpm_df) <- clean_sample_names(names(tpm_df))
+names(tpm_df)[1] <- "Contig_name"
+
+# Set row names to contig names
+rownames(tpm_df) <- tpm_df$Contig_name
+tpm_df$Contig_name <- NULL
+
+# Correct typo
+colnames(tpm_df)[colnames(tpm_df) == "D.JA.M21"] <- "D.JV.M21"
+
+head(tpm_df)
+```
+
+#### Apply the Coverage Mask
+
+Now, we create a "mask" from the `tpm_df`. The mask identifies all cells in the TPM table that are zero. Since this table was generated with the 75% coverage filter, a zero value indicates that the coverage threshold was not met for that vOTU in that sample. We then use this mask to set the corresponding values in our `rpkm_df` to zero.
+
+```{r apply_mask}
+# Ensure the data frames are aligned before creating the mask
+# This is crucial to avoid errors. We order rows and columns to be the same in both dataframes.
+common_contigs <- intersect(rownames(rpkm_df), rownames(tpm_df))
+common_samples <- intersect(colnames(rpkm_df), colnames(tpm_df))
+
+rpkm_df_aligned <- rpkm_df[common_contigs, common_samples]
+tpm_df_aligned <- tpm_df[common_contigs, common_samples]
+
+# Create the mask where TPM values are 0
+zero_mask <- tpm_df_aligned == 0
+
+# Apply the mask to the RPKM dataframe
+rpkm_df_aligned[zero_mask] <- 0
+
+head(rpkm_df_aligned)
+```
+
+### Finalize and Save Data
+
+Finally, we transpose the filtered RPKM matrix so that samples are rows and vOTUs are columns, which is a common format for downstream ecological analysis. We also remove positive and negative controls. The final, clean, and normalized table is saved to a file.
+
+```{r finalize_and_save}
+# Transpose the dataframe
+transposed_rpkm <- t(rpkm_df_aligned)
+transposed_rpkm <- as.data.frame(transposed_rpkm)
+
+# Remove control samples from the final table
+if ("Neg_control" %in% rownames(transposed_rpkm)) {
+  transposed_rpkm <- transposed_rpkm[-which(rownames(transposed_rpkm) == "Neg_control"),]
+}
+if ("Pos_control" %in% rownames(transposed_rpkm)) {
+  transposed_rpkm <- transposed_rpkm[-which(rownames(transposed_rpkm) == "Pos_control"),]
+}
+
+# Write the final table to a file
+write.table(transposed_rpkm, file = "master_clusters_custom_rpkm_bwa2.tsv", col.names = NA, quote = FALSE, sep = "\t")
+```
