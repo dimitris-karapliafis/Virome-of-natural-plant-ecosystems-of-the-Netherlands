@@ -62,7 +62,7 @@ This module annotates the viral contigs found in the discovery phase.
     - PalmDB
     - NCBI NR
 - **Palmscan**: Runs `palmscan` to identify RdRp domains.
-- **GeNomad**: Runs `genomad` to identify viruses and plasmids.
+- **GeNomad**: Runs `genomad` to identify viruses.
 - **MMseqs Search**: Searches against nucleotide databases (Embryophyta, MMseqs NT) to identify potential host contamination.
 - **Aggregation**: Combines all annotation results into a single comprehensive table.
 
