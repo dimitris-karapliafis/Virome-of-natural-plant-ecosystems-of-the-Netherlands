@@ -2,18 +2,6 @@
 
 This directory contains a collection of scripts and workflows designed for the post-processing and analysis of viral contigs identified from metagenomic data. The pipeline takes raw viral operational taxonomic units (vOTUs) and enriches them with taxonomic, host, and abundance information, culminating in a preliminary ecological analysis.
 
-## Workflow Overview
-
-The post-processing pipeline is organized into several distinct modules, each located in its own subdirectory. The typical flow of data and analysis is as follows:
-
-1.  **Contamination Check**: Initial quality control to check if .
-2.  **Ribodepletion Analysis**: Assessment of the efficiency of ribosomal RNA removal from the sequencing libraries.
-3.  **CoverM parameterisation** Parameters used to map the library reads to the vOTUs for various tasks. 
-3.  **Read Coverage Normalisation**: Calculation and normalization of read coverage for each vOTU to estimate their relative abundances across samples.
-4.  **easy-taxonomy parameterisation**: Assigning taxonomy to each vOTU using mmseqs easy-taxonomy.
-5.  **Host Association**: Predicting the likely hosts for the identified viruses.
-6.  **Preliminary Ecological Analysis**: Integrating the processed data to perform an initial exploration of the viral community structure and ecology.
-
 ---
 
 ### 1. `Contamination_check/`
